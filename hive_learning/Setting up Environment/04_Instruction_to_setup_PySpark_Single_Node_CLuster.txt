@@ -1,0 +1,34 @@
+a. GCP Free trial Account details
+pysparkprojectsample@gmail.com
+b. Enable Compute Engine API
+c. Setup Single node uBuntu Cluster
+d. Reserve external IP with name pysparkprojectsampleexternalip
+e. Install PIP3 and Java 
+f. setup SSH for connecting without password
+g. Install Hadoop,Yarn
+h. Install Docker
+i. Install Postgres Container
+j. Install Hive & Setup Hive & initate Hive Metastore with Postgreas Database
+k. ssh localhost
+l. Setup the PYSpark
+m. Setup Weblog & APplication History & check log via YARN CLI
+   create firewall pysparkprojectsamplefirewall to allow  web access
+   type externalip/8088
+n. Allow the History Access of logs
+   cd /opt/spark3/sbin
+   ./start-history-server.sh
+   jps
+  Open history url, initial url change with external ip
+  it will show port   
+  Inside Firewall allow history port
+  externalip/newport it will show historical history
+o. stop-yarn.sh    
+   stop-dfs.sh
+   cd /opt/spark3/sbin
+   ./stop-history-server.sh
+   jps
+q. start-dfs.sh    
+   start-yarn.sh
+   ./opt/spark3/sbin/start-history-server.sh
+  
+   

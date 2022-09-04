@@ -1,0 +1,35 @@
+
+--Create a Spark Job
+cd
+vi basic.py
+print("Start ...")
+  
+from pyspark.sql import SparkSession
+spark = SparkSession \
+       .builder \
+       .master('yarn') \
+       .appName("Python Spark SQL basic example") \
+       .getOrCreate()
+
+spark.sparkContext.setLogLevel('OFF')
+print("Spark Object is created")
+print("Spark Version used is :" + spark.sparkContext.version)
+
+print("... End")
+
+#3.x
+cp /opt/spark3/bin/spark-submit /opt/spark3/bin/spark3-submit
+
+-- Submit the Job to the Cluster
+spark3-submit --master yarn /home/${USER}/basic.py
+
+-- Turn off the INFO logs
+cp /opt/spark3/conf/log4j.properties.template /opt/spark3/conf/log4j.properties 
+set log4j.rootCategory=INFO, console
+to
+log4j.rootCategory=WARN, console
+
+spark3-submit --master yarn /home/${USER}/basic.py
+
+
+################ END ########################

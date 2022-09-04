@@ -1,0 +1,442 @@
+###################################################################################################################################################################################
+#Starting Containerized SQL Server Hive Metastore database
+###################################################################################################################################################################################
+docker start postgress_container
+
+###################################################################################################################################################################################
+#Starting Hive metastore service
+###################################################################################################################################################################################
+hive --service metastore 
+schematool -dbType postgres -initSchema
+
+
+###################################################################################################################################################################################
+#Connecting to hive cli & clearing it
+###################################################################################################################################################################################
+hive
+!clear;
+
+###################################################################################################################################################################################
+#Databases 
+###################################################################################################################################################################################
+show databases;
+create database if not exists hivedb comment ' This is an Test Database ' with dbproperties('creator' = 'shirish' , 'date' = '2022-07-22' );
+describe database extended hivedb; 
+use hivedb;
+
+###################################################################################################################################################################################
+#Creating Internal as well as External Table
+###################################################################################################################################################################################
+set hive.metastore.warehouse.dir;
+hadoop dfs -ls /user/hive/warehouse
+use hivedb;
+create table if not exists hive_emp_tab(empid string,empaddress array<string>,empcountry string,empsal int) 
+row format delimited 
+fields terminated by ','  
+collection items terminated by ':' 
+lines terminated by '\n' 
+stored as textfile location '/user/hive/warehouse/hive_emp_tab/';
+
+describe formatted hive_emp_tab;
+hadoop dfs -ls /user/hive/warehouse
+
+
+###################################################################################################################################################################################
+#Loading file into table
+###################################################################################################################################################################################
+#####Loading Text File
+a.load the file from upstream to your landing zone via sftp , in this case we are using cloud shell , we can setup filezilla or winscp for this
+  copy from local hive_emp_tab.txt to landing zone 
+ 
+b. load the file to hadoop from local 
+   hdfs dfs -put hive_emp_tab.txt hdfs://localhost:9000/user/pysparkprojectsample/
+   hdfs dfs -ls hdfs://localhost:9000/user/pysparkprojectsample/
+
+c. load file in hdfs  
+   load data inpath 'hdfs://localhost:9000/user/pysparkprojectsample/hive_emp_tab.txt' into table hive_emp_tab;
+   select * from  hive_emp_tab;
+
+d. load file in local unix path
+   load data local inpath 'hive_emp_tab.txt' into table hive_emp_tab;
+   select * from  hive_emp_tab;
+
+#####Loading CSV File
+create table if not exists hive_emp_tab_csv(empno int,ename string) row format delimited fields terminated by ',' lines terminated by '\n' stored as textfile location '/user/hive/warehouse/hive_emp_tab_csv/';
+load data local inpath 'hive_emp_tab_csv.csv' into table hive_emp_tab_csv;
+select * from hive_emp_tab_csv;
+load data local inpath 'hive_emp_tab_csv.csv' overwrite into table hive_emp_tab_csv;
+
+#####Loading Sequence File
+a. create table with sequence format
+   create table hive_emp_tab_temp_seq(empno int,ename string) row format delimited fields terminated by ',' lines terminated by '\n' stored as sequencefile location '/user/hive/warehouse/hive_emp_tab_temp_seq/';
+b. load the csv file data into seq temp table
+   insert into hive_emp_tab_temp_seq select * from hive_emp_tab_csv;
+   select * from hive_emp_tab_temp_seq;
+c. see the sequence file generated for table
+   hdfs dfs -ls '/user/hive/warehouse/hive_emp_tab_temp_seq/'
+d. get the sequence file on local
+   hdfs dfs -get /user/hive/warehouse/hive_emp_tab_temp_seq/000000_0 hive_emp_tab_temp_org_seq.seq;
+   file hive_emp_tab_temp_org_seq.seq
+e. create the new sequence format table 
+   create table hive_emp_tab_org_seq(emp int,ename string) row format delimited fields terminated by ',' lines terminated by '\n' stored as sequencefile location '/user/hive/warehouse/hive_emp_tab_org_seq/';
+   load data local inpath 'hive_emp_tab_temp_org_seq.seq' into table hive_emp_tab_org_seq;
+   select * from hive_emp_tab_org_seq;
+
+######## Loading the AVRO File 
+a. Reference Link : https://greenplum.docs.pivotal.io/6-0/pxf/hdfs_avro.html
+b. Create Avro Schema file
+   vi hive_emp_tab_avro_schema.avsc
+   {
+"type" : "record",
+  "name" : "example_schema",
+  "namespace" : "com.example",
+  "fields" : [ {
+    "name" : "id",
+    "type" : "long",
+    "doc" : "Id of the user account"
+  }, {
+    "name" : "username",
+    "type" : "string",
+    "doc" : "Name of the user account"
+  }, {
+    "name" : "followers",
+    "type" : {"type": "array", "items": "string"},
+    "doc" : "Users followers"
+  }, {
+    "name": "fmap",
+    "type": {"type": "map", "values": "long"}
+  }, {
+    "name": "relationship",
+    "type": {
+        "type": "enum",
+        "name": "relationshipEnum",
+        "symbols": ["MARRIED","LOVE","FRIEND","COLLEAGUE","STRANGER","ENEMY"]
+    }
+  }, {
+    "name": "address",
+    "type": {
+        "type": "record",
+        "name": "addressRecord",
+        "fields": [
+            {"name":"number", "type":"int"},
+            {"name":"street", "type":"string"},
+            {"name":"city", "type":"string"}]
+    }
+  } ],
+  "doc:" : "A basic schema for storing messages"
+}
+
+c. Create the data file in text format
+   vi hive_emp_tab_avro_dataintext.txt
+   {"id":1, "username":"john","followers":["kate", "santosh"], "relationship": "FRIEND", "fmap": {"kate":10,"santosh":4}, "address":{"number":1, "street":"renaissance drive", "city":"san jose"}}
+
+   {"id":2, "username":"jim","followers":["john", "pam"], "relationship": "COLLEAGUE", "fmap": {"john":3,"pam":3}, "address":{"number":9, "street":"deer creek", "city":"palo alto"}}
+
+d. Copy the jar which will help to convert json data into avro format based on avro schema template
+   wget https://dlcdn.apache.org/avro/avro-1.11.0/java/avro-tools-1.11.0.jar  
+
+e. Convert json into avro format using schema evolution & JAR
+   java -jar ./avro-tools-1.11.0.jar  fromjson --schema-file hive_emp_tab_avro_schema.avsc hive_emp_tab_avro_dataintext.txt > hive_emp_tab_avro.avro
+
+f. upload the avro schema on hdfs hive_emp_tab_avro_schema.avsc
+   hdfs dfs -put hive_emp_tab_avro_schema.avsc hdfs://localhost:9000/user/pysparkprojectsample/
+   hdfs dfs -ls hdfs://localhost:9000/user/pysparkprojectsample
+
+g. Create table to load avro dataset
+   create external table hive_emp_tab_avro(id int, username string, followers string, fmap string, relationship string, address string) 
+   row format serde 'org.apache.hadoop.hive.serde2.avro.AvroSerDe'
+   stored as inputformat 'org.apache.hadoop.hive.ql.io.avro.AvroContainerInputFormat'
+   outputformat 'org.apache.hadoop.hive.ql.io.avro.AvroContainerOutputFormat'
+   location '/user/hive/warehouse/hive_emp_tab_org_avro/'
+   tblproperties('avro.schema.url'='hdfs://localhost:9000/user/pysparkprojectsample/hive_emp_tab_avro_schema.avsc');
+
+h. loading the data into avro format table
+   load data local inpath 'hive_emp_tab_avro.avro' into table hive_emp_tab_avro;
+
+i. selecting the data set
+   select * from hive_emp_tab_avro;
+
+######## Loading the Parquet File 
+
+a. using schematool of parquet first you need to identify the schema of file
+create table hive_emp_tab_parquet(id bigint, username string, followers array<string>, fmap map<string,bigint>, relationship string, address struct<number:int,street:string,city:string>)  row format delimited fields terminated by ',' lines terminated by '\n' stored as parquet location '/user/hive/warehouse/hive_emp_tab_parquet/';
+insert into hive_emp_tab_parquet select * from hive_emp_tab_avro;
+select * from hive_emp_tab_parquet;
+
+###################################################################################################################################################################################
+#Partitioning 
+###################################################################################################################################################################################
+create table hive_emp_part(empid int,ename string) partitioned by (deptname string) row format delimited
+fields terminated by ',' 
+lines terminated by '\n'
+stored as textfile location '/user/hive/warehouse/hive_emp_part/'
+tblproperties('creator' = 'shirish');
+
+insert into hive_emp_part select a.*,'ACC' from hive_emp_tab_csv a;
+select * from hive_emp_part where deptname = 'ACC';
+
+alter table hive_emp_part add partition (deptname = 'HR');
+alter table hive_emp_part drop partition (deptname = 'HR');
+alter table hive_emp_part archive partition (deptname = 'HR');
+alter table hive_emp_part unarchive partition (deptname = 'HR');
+
+b. If the file is manually loaded on location , then we can use msck repait command to update metastore of table
+   msck repair table hive_emp_part;
+
+###################################################################################################################################################################################
+#Bucketing 
+###################################################################################################################################################################################
+
+create table hive_emp_part_buk(empid int,ename string,location string) partitioned by (dname string) clustered by(location) into 4 buckets
+row format delimited
+fields terminated by ','
+lines terminated by '\n'
+stored as textfile location '/user/hive/warehouse/hive_emp_part_buk/'
+tblproperties('creator' = 'shirish');
+
+set hive.exec.dynamic.partition.mode=nonstrict
+insert into hive_emp_part_buk partition(dname) select a.*,'India','ACC' from hive_emp_tab_csv a;
+
+
+###################################################################################################################################################################################
+#Indexes / Sampling
+###################################################################################################################################################################################
+
+create index hive_emp_tab_csv_idx1 on table hive_emp_tab_csv(empno) as 'COMPACT' with deferred rebuild row format delimited fields terminated by ',' stored as textfile '/user/hive/warehouse/hive_emp_tab_csv_idx1/' ;
+create index hive_emp_tab_csv_idx2 on table hive_emp_tab_csv(empno) as 'BITMAP' with deferred rebuild row format delimited fields terminated by ',' stored as textfile '/user/hive/warehouse/hive_emp_tab_csv_idx2/' ;
+show formatted index on hive_emp_tab_csv;
+ORC already create index so no need for index
+The Index which is created on column first is used.
+
+
+###################################################################################################################################################################################
+#selecting data from complex datatype with header
+###################################################################################################################################################################################
+describe formatted hive_emp_tab_parquet;
+select id from hive_emp_tab_parquet;
+select id,followers from hive_emp_tab_parquet;
+select id,followers[0],followers[1] from hive_emp_tab_parquet;
+select id,fmap from hive_emp_tab_parquet;
+select id,fmap['kate'],fmap['santosh'],fmap['john'] from hive_emp_tab_parquet;
+select id,address from hive_emp_tab_parquet;
+select id,address.street,address.city from hive_emp_tab_parquet;
+
+###################################################################################################################################################################################
+#Multiinsert inserting one table data into multiple table in one query
+###################################################################################################################################################################################
+create table source_multiinsert(empno int,ename string) row format delimited fields terminated by ',' lines terminated by '\n' stored as textfile  location '/user/hive/warehouse/source_multiinsert/';
+create table tgt_1_multiinsert(empno int) row format delimited fields terminated by ',' lines terminated by '\n' stored as textfile  location '/user/hive/warehouse/tgt_1_multiinsert/';
+create table tgt_2_multiinsert(ename string) row format delimited fields terminated by ',' lines terminated by '\n' stored as textfile  location '/user/hive/warehouse/tgt_2_multiinsert/';
+load data local inpath 'hive_emp_tab_csv.csv' into table source_multiinsert;
+select * from source_multiinsert;
+from source_multiinsert insert into tgt_1_multiinsert select empno insert into tgt_2_multiinsert select ename;
+select * from tgt_1_multiinsert;
+select * from tgt_2_multiinsert;
+
+###################################################################################################################################################################################
+#Alter the objects
+###################################################################################################################################################################################
+create table hive_alter_tab(empid int,ename string) 
+row format delimited 
+fields terminated by ',' 
+lines terminated by '\n' 
+stored as textfile location '/user/hive/warehouse/hive_alter_tab/' 
+tblproperties('creator' = 'shirish','date' = '2022-07-23', 'comment'  = 'This is alter schema' );
+load data local inpath 'hive_emp_tab_csv.csv' into table hive_alter_tab;
+
+a. Change the Datatype of column
+alter table hive_alter_tab change empid empid string;
+describe hive_alter_tab;
+b. Change the name of the column
+alter table hive_alter_tab change empid emp_id string;
+c. Add extra column at the end of the table
+alter table  hive_alter_tab add columns  (emp_address string,emp_salary int);
+d. Change the position of the column with name change
+alter table hive_alter_tab change column emp_id emp_id_new string after ename; 
+e. Drop an column can be done via replace command only
+alter table hive_alter_tab replace columns(empid string,ename string) ;
+
+f. Rename the table
+ alter table hive_alter_tab rename to hive_alter_tab_new; 
+g. Alter the Table properties
+ alter table hive_alter_tab_new set tblproperties('creator_new' = 'rashmi');
+h. Change the table data format
+ alter table hive_alter_tab_new set fileformat avro;
+ alter table hive_alter_tab_new set fileformat textfile;
+ select * from hive_alter_tab_new;
+
+###################################################################################################################################################################################
+#Functions in Hive
+###################################################################################################################################################################################
+a. Date Function
+   select unix_timestamp('2022-07-24 00:00:00.00');
+   select from_unixtime(1658620800);
+   select TO_DATE('2022-07-24 00:00:00.00');
+   select YEAR('2022-07-24 00:00:00.00');
+   select MONTH('2022-07-24 00:00:00.00');
+   select DAY('2022-07-24 00:00:00.00');
+   select HOUR('2022-07-24 00:00:00.00');
+   select MINUTE('2022-07-24 00:00:00.00');
+   select SECOND('2022-07-24 00:00:00.00');
+   select WEEKOFYEAR('2022-07-24 00:00:00.00');
+
+   select DATEDIFF('2022-07-24 00:00:00.00','2021-07-24 00:00:00.00');
+   select DATE_ADD('2022-07-24 00:00:00.00',10);
+   select DATE_SUB('2022-07-24 00:00:00.00',10);
+
+b. Math Function
+   select ceil(9.4);
+   select floor(9.4);
+   select round(9.656688,2);
+   select rand();
+   select(23.5);
+
+c. String Function
+   select concat('shirish','-','umredkar');
+   select length('shirish umredkar');
+   select lower('SHIRISH');
+   select upper('shirish');
+   select lpad('shirish',20,'-');
+   select rpad('shirish',20,'-');
+   select ltrim('   shirish');
+   select rtrim('shirish    ');
+   select repeat('shirish',10);
+   select reverse('shirish');
+
+   select split('shirish,umredkar,rashmi,umredkar,aaditya,umredkar',',');
+   select substr('shirish-umredkar',1,7),substr('shirish-umredkar',9);
+   select substr('shirish-umredkar',1,instr('shirish-umredkar','-')-1);
+   select substr('shirish-umredkar',instr('shirish-umredkar','-')+1);
+
+   select 'shirish' rlike 's';
+   select 'shirish' rlike 'h';
+   select 'shirish' rlike 'sh*';
+
+   
+   
+d. Conditional Function
+
+   select if('shirish'='shirish','shirish','umredkar');
+   select case when 'shirish'='shirish' then 'shirish'
+               when 'shirishu'='shirishu' then 'shirishu' end;
+    
+e. Null Function
+   
+   select isnull(null);
+   select isnull(' ');
+   select isnotnull(null);
+   select coalesce(null,null,'shirish');
+   select nvl(null,'shirish');
+   select nvl('umredkar','shirish');
+
+
+f. Analytical Function
+
+use hivedb;
+create table if not exists hive_analytical_tab(empid string,empaddress array<string>,empcountry string,empsal int) 
+row format delimited 
+fields terminated by ','  
+collection items terminated by ':' 
+lines terminated by '\n' 
+stored as textfile location '/user/hive/warehouse/hive_analytical_tab/';
+
+load data local inpath 'hive_emp_tab.txt' into table hive_analytical_tab;
+
+select empid,sum(empsal) over(order by empid) emp_sal_cnt from hivedb.hive_analytical_tab; -- running total all employees 
+select empid,sum(empsal) over(partition by empid order by empid) emp_sal_cnt from hive_analytical_tab;  -- running total per employees 
+select empid,row_number() over(order by empsal nulls last) emp_sal_numbering from hive_analytical_tab;
+select empid,rank() over(order by empsal nulls last) emp_sal_numbering from hive_analytical_tab;
+select empid,dense_rank() over(order by empsal nulls last) emp_sal_numbering from hive_analytical_tab;
+
+g. Explode & Flatten Function
+
+  select explode(a.empaddress) from hive_analytical_tab a ; -- Only Single column can be in select
+  select empid,empaddress_explode from hive_analytical_tab lateral view explode(empaddress) empaddress_explode as empaddress_explode;
+
+###################################################################################################################################################################################
+#Joins 
+###################################################################################################################################################################################
+create table hive_emp_join(empid int,empname string,empjob string,empsal int,empcode int,deptid int,empflightcode string) 
+row format delimited
+fields terminated by ','
+lines terminated by '\n'
+stored as textfile location '/user/hive/warehouse/hive_emp_join';
+load data local inpath 'hive_join_employee.txt' into table hive_emp_join;
+
+create table hive_dept_join(deptid int,deptname string,deptcity string,deptflightcode string)
+row format delimited
+fields terminated by ','
+lines terminated by '\n'
+stored as textfile location '/user/hive/warehouse/hive_dept_join';
+load data local inpath 'hive_join_dept.txt' into table hive_dept_join;
+
+SET hive.cli.print.header=true;
+select a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a join hive_dept_join b on a.deptid=b.deptid;
+select a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a inner join hive_dept_join b on a.deptid=b.deptid;
+select a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a left outer join hive_dept_join b on a.deptid=b.deptid;
+select a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a right outer join hive_dept_join b on a.deptid=b.deptid;
+select a.empid,a.empname,a.deptid from hive_emp_join a cross join hive_emp_join b;
+select a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a inner join hive_dept_join b on a.deptid=b.deptid and a.empid<>0;
+select a.empid,a.empname,a.deptid,b.deptname,c.empid from hive_emp_join a inner join hive_dept_join b on a.deptid=b.deptid inner join hive_emp_join c on a.empid=c.empid;
+
+b. Join Hints ( STREAMTABLE, MAPJOIN )
+select /*+STREAMTABLE(a)*/ a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a join hive_dept_join b on a.deptid=b.deptid;
+select /*+MAPJOIN(b)*/ a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a join hive_dept_join b on a.deptid=b.deptid;
+
+###################################################################################################################################################################################
+#Ordering ( orderby, sort by,distribute by, cluster by )
+###################################################################################################################################################################################
+select * from hive_emp_join order by empid;
+select * from hive_emp_join sort by empid;
+select * from hive_emp_join distribute by empid;
+select * from hive_emp_join cluster by empid;
+
+###################################################################################################################################################################################
+#Views
+###################################################################################################################################################################################
+create view hive_emp_dept_view as select a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a join hive_dept_join b on a.deptid=b.deptid;
+alter view hive_emp_dept_view as select a.empid,a.empname,a.deptid,b.deptname from hive_emp_join a join hive_dept_join b on a.deptid=b.deptid;
+alter view hive_emp_dept_view rename to hive_emp_dept_new_view;
+show tables ;
+drop view hive_emp_dept_new_view;
+
+###################################################################################################################################################################################
+#Sampling , NO DROP  , OFFLINE ( Table level & Partition Level )
+###################################################################################################################################################################################
+select * from hive_emp_part_buk tablesample(bucket 1 out of 2 on location );
+select * from hive_emp_part_buk tablesample(1M);
+select * from hive_emp_part_buk tablesample(10 percent);
+select * from hive_emp_part_buk tablesample(1 rows);
+
+alter table hive_emp_part_buk enable offline;
+select * from hive_emp_part_buk;
+alter table hive_emp_part_buk enable no_drop;
+drop table hive_emp_part_buk;
+
+###################################################################################################################################################################################
+#Variables in Hive hivevar, hiveconf ( Both are session specific ) , .hiverc( Permanent configuration)
+###################################################################################################################################################################################
+a. Calling Bash command from Hive Shell
+   !pwd;
+   !clear; 
+b. Calling hive command from bash shell
+   hive -e " select * from hivedb.hive_emp_part_buk tablesample(bucket 1 out of 2 on location ) ";
+   vi query.hql
+   select * from hivedb.hive_emp_part_buk tablesample(bucket 1 out of 2 on location ) 
+   hive -f query.hql
+c. The hiveconf namespace and --hiveconf should be used to set Hive configuration values.
+   The hivevar namespace and --hivevar should be used to define user variables.
+   Setting user variables under the hiveconf namespace probably won't break anything, but isn't recommended.
+
+   hive --hiveconf empno='500' --hivevar empno=501 -e 'select * from hivedb.hive_emp_part_buk where empid=${hiveconf:empno}'
+   select * from emp_tab where col6=${hiveconf:deptno};
+   select col1,${name} from emp_tab where col6 =${hiveconf:deptno};  
+   hive --hiveconf deptno=20 -e 'select * from emp_tab where col6 =${hiveconf:deptno};'
+   hive --hivevar deptno=10 -e 'select * from emp_tab where col6 =${deptno};' 
+   hive --hivevar deptno=10 --hiveconf tablename=emp_tab -e 'select * from ${hiveconf:tablename} where col6 =${deptno};' 
+   hive --hivevar empid=col1 --hiveconf tablename=emp_tab --hivevar deptno=10 -f /home/jivesh/script.hql
+
+###################################################################################################################################################################################
+#Miscellaneous
+###################################################################################################################################################################################
+9,10,11,13,16,17,18
